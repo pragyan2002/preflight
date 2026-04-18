@@ -1,0 +1,467 @@
+#!/bin/sh
+# preflight — cross-tool plugin dependency manager
+#
+# Usage:
+#   preflight install [--yes]   Install missing plugins from preflight.json
+#   preflight check             Audit status without installing
+#   preflight init [--yes]      Scaffold preflight.json interactively
+#   preflight add <plugin>      Add an installed plugin to preflight.json
+#   preflight help
+#   preflight --version
+#
+# Environment:
+#   PREFLIGHT_DIR      Project directory (default: $PWD)
+#   PREFLIGHT_ADAPTER  Adapter name override (e.g. "claude", "codex")
+#
+# Flags:
+#   --yes              Auto-accept all prompts (non-interactive / CI mode)
+#   --no-interactive   Alias for --yes
+
+VERSION="1.0.0"
+PREFLIGHT_DIR="${PREFLIGHT_DIR:-$PWD}"
+MANIFEST="${PREFLIGHT_DIR}/preflight.json"
+PREFLIGHT_ROOT="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
+YES=0  # set to 1 by --yes / --no-interactive
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+die()         { printf "preflight: error: %s\n" "$1" >&2; exit 1; }
+require_cmd() { command -v "$1" > /dev/null 2>&1 || die "$1 is required but not installed."; }
+require_jq()  { require_cmd jq; }
+
+require_manifest() {
+  [ -f "$MANIFEST" ] || die "preflight.json not found in $PREFLIGHT_DIR. Run: preflight init"
+  jq empty "$MANIFEST" > /dev/null 2>&1 || die "preflight.json is not valid JSON."
+}
+
+# Delegates to adapter_is_installed — no hardcoded file paths in core CLI logic.
+# Adapter must be loaded before calling this.
+is_installed() {
+  adapter_is_installed "$1" 2>/dev/null || echo "0"
+}
+
+# Prompt wrapper — skips to default answer when YES=1.
+# Usage: ask_yes_no "Question?" && do_thing
+ask_yes_no() {
+  QUESTION="$1"
+  if [ "$YES" = "1" ]; then
+    return 0  # auto-yes
+  fi
+  printf "%s [y/N] " "$QUESTION"
+  read -r REPLY
+  case "$REPLY" in
+    y|Y|yes|Yes) return 0 ;;
+    *)           return 1 ;;
+  esac
+}
+
+# ── adapter detection ─────────────────────────────────────────────────────────
+
+detect_adapter() {
+  if [ -n "$PREFLIGHT_ADAPTER" ]; then
+    ADAPTER_FILE="${PREFLIGHT_ROOT}/adapters/${PREFLIGHT_ADAPTER}.sh"
+    [ -f "$ADAPTER_FILE" ] || die "Adapter not found: $ADAPTER_FILE"
+    . "$ADAPTER_FILE"
+    return 0
+  fi
+
+  if command -v claude > /dev/null 2>&1; then
+    . "${PREFLIGHT_ROOT}/adapters/claude.sh"
+    return 0
+  fi
+
+  # Stubs for future adapters — add detection here when adapters ship:
+  # if command -v codex > /dev/null 2>&1; then
+  #   . "${PREFLIGHT_ROOT}/adapters/codex.sh"; return 0
+  # fi
+
+  die "No supported AI coding tool found in PATH.
+Supported: claude (Claude Code)
+Coming soon: codex, cursor, windsurf
+
+Override: PREFLIGHT_ADAPTER=claude preflight install
+See: https://github.com/pragyan2002/preflight/tree/main/adapters"
+}
+
+# ── commands ──────────────────────────────────────────────────────────────────
+
+cmd_help() {
+  cat << EOF
+preflight $VERSION — declarative plugin dependency management for AI coding tools
+
+Usage:
+  preflight install [--yes]         Install all missing plugins from preflight.json
+  preflight check                   Audit plugin status without installing (exits 1 if missing)
+  preflight init [--yes]            Scaffold preflight.json from currently installed plugins
+  preflight add <plugin@mkt>        Add a plugin to preflight.json (required or recommended)
+  preflight help                    Show this help
+  preflight --version               Print version
+
+Flags:
+  --yes, --no-interactive           Skip all prompts, auto-accept (for CI / scripts)
+
+Options:
+  --dir <path>                      Use a different project directory
+  PREFLIGHT_DIR=<path>              Same as --dir via environment variable
+  PREFLIGHT_ADAPTER=<name>          Override auto-detected tool adapter
+
+Tool adapters auto-detected from PATH: claude (Claude Code)
+Planned: codex, cursor, windsurf
+
+More info: https://github.com/pragyan2002/preflight
+EOF
+}
+
+cmd_check() {
+  require_jq
+  require_manifest
+  detect_adapter
+
+  printf "preflight check — %s\n\n" "$MANIFEST"
+
+  # Marketplaces
+  printf "Marketplaces\n"
+  MKTS=$(jq -r '.marketplaces // {} | keys[]' "$MANIFEST" 2>/dev/null)
+  if [ -z "$MKTS" ]; then
+    printf "  (none declared)\n"
+  else
+    REGISTERED=$(adapter_list_marketplaces 2>/dev/null || echo "")
+    for mkt in $MKTS; do
+      if echo "$REGISTERED" | grep -qx "$mkt"; then
+        printf "  \033[32m✓\033[0m %s\n" "$mkt"
+      else
+        printf "  \033[31m✗\033[0m %s  NOT REGISTERED\n" "$mkt"
+      fi
+    done
+  fi
+
+  # Source core logic with adapter routing
+  INSTALLED=""  # not needed — USE_ADAPTER=1 routes through adapter
+  USE_ADAPTER=1
+  . "${PREFLIGHT_ROOT}/core/detect-missing.sh" 2>/dev/null \
+    || die "Could not load core/detect-missing.sh"
+
+  validate_required_field
+  VALID=$?
+  [ $VALID -eq 1 ] && {
+    printf "\nRequired plugins\n  (none declared)\n"
+    printf "\nRecommended plugins\n"
+  }
+  [ $VALID -eq 2 ] && die ".preflight.required must be an array. Run: preflight check to see the full error."
+
+  if [ $VALID -eq 0 ]; then
+    printf "\nRequired plugins\n"
+    REQUIRED=$(jq -r '.preflight.required // [] | .[]' "$MANIFEST" 2>/dev/null)
+    REQ_MISSING=0
+    REQ_TOTAL=0
+    for plugin in $REQUIRED; do
+      REQ_TOTAL=$((REQ_TOTAL + 1))
+      FOUND=$(is_installed "$plugin")
+      if [ "$FOUND" != "0" ]; then
+        printf "  \033[32m✓\033[0m %s\n" "$plugin"
+      else
+        printf "  \033[31m✗\033[0m %s  MISSING\n" "$plugin"
+        REQ_MISSING=$((REQ_MISSING + 1))
+      fi
+    done
+
+    printf "\nRecommended plugins\n"
+    RECOMMENDED=$(jq -r '.preflight.recommended // [] | .[]' "$MANIFEST" 2>/dev/null)
+    if [ -z "$RECOMMENDED" ]; then
+      printf "  (none declared)\n"
+    else
+      for plugin in $RECOMMENDED; do
+        FOUND=$(is_installed "$plugin")
+        if [ "$FOUND" != "0" ]; then
+          printf "  \033[32m✓\033[0m %s\n" "$plugin"
+        else
+          printf "  \033[2m-\033[0m %s  not installed (optional)\n" "$plugin"
+        fi
+      done
+    fi
+
+    printf "\n"
+    if [ "$REQ_MISSING" = "0" ]; then
+      printf "\033[32mAll plugin dependencies satisfied.\033[0m\n"
+      return 0
+    else
+      printf "\033[31m%s required plugin(s) missing. Run: preflight install\033[0m\n" "$REQ_MISSING"
+      return 1
+    fi
+  fi
+}
+
+cmd_install() {
+  require_jq
+  require_manifest
+  detect_adapter
+  adapter_verify || exit 1
+
+  printf "preflight install — %s\n" "$MANIFEST"
+  [ "$YES" = "1" ] && printf "  (non-interactive mode)\n"
+  printf "\n"
+
+  MKT_COUNT=0
+  INSTALLED_COUNT=0
+  FAILED_COUNT=0
+
+  # Step 1: register missing marketplaces
+  MKTS=$(jq -r '.marketplaces // {} | to_entries[] | "\(.key) \(.value.repo)"' "$MANIFEST" 2>/dev/null)
+  if [ -n "$MKTS" ]; then
+    printf "Registering marketplaces...\n"
+    REGISTERED=$(adapter_list_marketplaces 2>/dev/null || echo "")
+    echo "$MKTS" | while IFS=" " read -r name repo; do
+      if echo "$REGISTERED" | grep -qx "$name"; then
+        printf "  \033[2mskip\033[0m %s (already registered)\n" "$name"
+      else
+        printf "  add  %s (%s)..." "$name" "$repo"
+        if adapter_add_marketplace "$name" "$repo"; then
+          printf " \033[32mdone\033[0m\n"
+        else
+          printf " \033[31mfailed\033[0m\n"
+        fi
+      fi
+    done
+  fi
+
+  # Step 2: install required plugins
+  printf "\nInstalling required plugins...\n"
+  REQUIRED=$(jq -r '.preflight.required // [] | .[]' "$MANIFEST" 2>/dev/null)
+  if [ -z "$REQUIRED" ]; then
+    printf "  (none declared)\n"
+  else
+    for plugin in $REQUIRED; do
+      FOUND=$(is_installed "$plugin")
+      if [ "$FOUND" != "0" ]; then
+        printf "  \033[2mskip\033[0m %s (already installed)\n" "$plugin"
+      else
+        printf "  install %s..." "$plugin"
+        if adapter_install_plugin "$plugin" "project"; then
+          printf " \033[32mdone\033[0m\n"
+          INSTALLED_COUNT=$((INSTALLED_COUNT + 1))
+        else
+          printf " \033[31mfailed\033[0m\n"
+          FAILED_COUNT=$((FAILED_COUNT + 1))
+        fi
+      fi
+    done
+  fi
+
+  # Step 3: recommended plugins — skip entirely in --yes mode
+  RECOMMENDED=$(jq -r '.preflight.recommended // [] | .[]' "$MANIFEST" 2>/dev/null)
+  if [ -n "$RECOMMENDED" ]; then
+    if [ "$YES" = "1" ]; then
+      printf "\nSkipping recommended plugins (--yes mode).\n"
+    else
+      printf "\nRecommended plugins (optional):\n"
+      for plugin in $RECOMMENDED; do
+        FOUND=$(is_installed "$plugin")
+        if [ "$FOUND" != "0" ]; then
+          printf "  \033[2mskip\033[0m %s (already installed)\n" "$plugin"
+          continue
+        fi
+        if ask_yes_no "  Install $plugin?"; then
+          printf "  installing..."
+          if adapter_install_plugin "$plugin" "project"; then
+            printf " \033[32mdone\033[0m\n"
+            INSTALLED_COUNT=$((INSTALLED_COUNT + 1))
+          else
+            printf " \033[31mfailed\033[0m\n"
+            FAILED_COUNT=$((FAILED_COUNT + 1))
+          fi
+        else
+          printf "  \033[2mskipped\033[0m\n"
+        fi
+      done
+    fi
+  fi
+
+  printf "\nDone. Required installed: %s. Failed: %s.\n" "$INSTALLED_COUNT" "$FAILED_COUNT"
+  [ "$FAILED_COUNT" -gt "0" ] && {
+    printf "Some installs failed. Run \`preflight check\` to see what is still missing.\n"
+    return 1
+  }
+}
+
+cmd_add() {
+  require_jq
+
+  PLUGIN_ID=""
+  CATEGORY="required"
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --required)     CATEGORY="required";    shift ;;
+      --recommended)  CATEGORY="recommended"; shift ;;
+      --*)            die "Unknown option: $1" ;;
+      *)
+        [ -n "$PLUGIN_ID" ] && die "Too many arguments. Usage: preflight add <plugin@marketplace>"
+        PLUGIN_ID="$1"; shift ;;
+    esac
+  done
+
+  [ -z "$PLUGIN_ID" ] && die "Usage: preflight add <plugin@marketplace> [--required|--recommended]"
+
+  case "$PLUGIN_ID" in
+    *@*) ;;
+    *) die "Plugin identifier must be 'name@marketplace' format. Example: security-guidance@claude-plugins-official" ;;
+  esac
+
+  # Create manifest if absent
+  if [ ! -f "$MANIFEST" ]; then
+    printf "No preflight.json found. Creating one at %s\n" "$MANIFEST"
+    jq -n '{preflight:{required:[],recommended:[]},marketplaces:{},versions:{},preflightVersion:"1"}' \
+      > "$MANIFEST" 2>/dev/null || die "Could not create preflight.json"
+  fi
+
+  jq empty "$MANIFEST" > /dev/null 2>&1 || die "preflight.json is not valid JSON."
+
+  # Check if already in requested list
+  ALREADY=$(jq --arg p "$PLUGIN_ID" --arg c "$CATEGORY" \
+    '.preflight[$c] // [] | any(. == $p)' "$MANIFEST" 2>/dev/null)
+  if [ "$ALREADY" = "true" ]; then
+    printf "  \033[2m%s is already in .preflight.%s\033[0m\n" "$PLUGIN_ID" "$CATEGORY"
+    exit 0
+  fi
+
+  # Check other list
+  OTHER=$([ "$CATEGORY" = "required" ] && echo "recommended" || echo "required")
+  IN_OTHER=$(jq --arg p "$PLUGIN_ID" --arg c "$OTHER" \
+    '.preflight[$c] // [] | any(. == $p)' "$MANIFEST" 2>/dev/null)
+  if [ "$IN_OTHER" = "true" ]; then
+    printf "  Warning: %s is already in .preflight.%s\n" "$PLUGIN_ID" "$OTHER"
+    if ask_yes_no "  Move it to $CATEGORY?"; then
+      UPDATED=$(jq --arg p "$PLUGIN_ID" --arg c "$OTHER" \
+        '.preflight[$c] = [.preflight[$c][] | select(. != $p)]' \
+        "$MANIFEST" 2>/dev/null)
+      printf "%s" "$UPDATED" > "$MANIFEST"
+    else
+      printf "Aborted.\n"; exit 0
+    fi
+  fi
+
+  UPDATED=$(jq --arg p "$PLUGIN_ID" --arg c "$CATEGORY" \
+    '.preflight[$c] += [$p]' "$MANIFEST" 2>/dev/null) \
+    || die "Failed to update preflight.json"
+
+  printf "%s" "$UPDATED" > "$MANIFEST"
+  printf "  \033[32madded\033[0m %s → .preflight.%s\n" "$PLUGIN_ID" "$CATEGORY"
+  printf "\n  Don't forget to commit:\n"
+  printf "    git add preflight.json\n"
+  printf "    git commit -m \"chore: add %s to preflight.json\"\n" "$PLUGIN_ID"
+}
+
+cmd_init() {
+  require_jq
+  detect_adapter
+  adapter_verify || exit 1
+
+  if [ -f "$MANIFEST" ]; then
+    if ! ask_yes_no "preflight.json already exists at $MANIFEST. Overwrite?"; then
+      printf "Aborted.\n"; exit 0
+    fi
+  fi
+
+  printf "preflight init — creating %s\n" "$MANIFEST"
+  [ "$YES" = "1" ] && printf "  (non-interactive mode — all plugins will be marked required)\n"
+  printf "\n"
+
+  PLUGIN_LIST=$(adapter_list_plugins 2>/dev/null)
+  if [ -z "$PLUGIN_LIST" ]; then
+    printf "No plugins currently installed. Install some first, then run preflight init.\n"
+    exit 1
+  fi
+
+  REQUIRED_LIST=""
+  RECOMMENDED_LIST=""
+
+  if [ "$YES" = "1" ]; then
+    # Non-interactive: mark all installed plugins as required
+    printf "Marking all installed plugins as required:\n"
+    echo "$PLUGIN_LIST" | while IFS= read -r plugin; do
+      [ -z "$plugin" ] && continue
+      printf "  required: %s\n" "$plugin"
+      REQUIRED_LIST="${REQUIRED_LIST}\"${plugin}\","
+    done
+  else
+    printf "Categorise each installed plugin:\n"
+    printf "  r = required, o = optional/recommended, s = skip\n\n"
+    echo "$PLUGIN_LIST" | while IFS= read -r plugin; do
+      [ -z "$plugin" ] && continue
+      printf "  %s [r/o/s]: " "$plugin"
+      read -r CHOICE
+      case "$CHOICE" in
+        r|R|required)              REQUIRED_LIST="${REQUIRED_LIST}\"${plugin}\"," ;;
+        o|O|optional|recommended)  RECOMMENDED_LIST="${RECOMMENDED_LIST}\"${plugin}\"," ;;
+      esac
+    done
+  fi
+
+  REQUIRED_LIST="${REQUIRED_LIST%,}"
+  RECOMMENDED_LIST="${RECOMMENDED_LIST%,}"
+
+  # Collect marketplace sources
+  SELECTED_MKTS=$(printf "%s,%s" "$REQUIRED_LIST" "$RECOMMENDED_LIST" | \
+    grep -oE '@[a-zA-Z0-9_-]+' | sort -u | sed 's/^@//')
+
+  MARKETPLACE_JSON="{}"
+  REGISTERED=$(adapter_list_marketplaces 2>/dev/null || echo "")
+  for mkt in $SELECTED_MKTS; do
+    [ "$mkt" = "claude-plugins-official" ] && continue
+    if echo "$REGISTERED" | grep -qx "$mkt"; then
+      printf "\nMarketplace '%s' already registered — skipping.\n" "$mkt"
+    elif [ "$YES" = "1" ]; then
+      printf "\nWarning: marketplace '%s' is not registered and cannot be prompted for in --yes mode.\n" "$mkt"
+      printf "Add it manually to preflight.json under .marketplaces after init.\n"
+    else
+      printf "\nMarketplace '%s' needs a source repo.\n" "$mkt"
+      printf "GitHub repo (owner/repo): "
+      read -r REPO
+      if [ -n "$REPO" ]; then
+        MARKETPLACE_JSON=$(echo "$MARKETPLACE_JSON" | \
+          jq --arg m "$mkt" --arg r "$REPO" \
+          '. + {($m): {"source": "github", "repo": $r}}' 2>/dev/null)
+      fi
+    fi
+  done
+
+  jq -n \
+    --argjson req  "[${REQUIRED_LIST:-}]" \
+    --argjson rec  "[${RECOMMENDED_LIST:-}]" \
+    --argjson mkts "$MARKETPLACE_JSON" \
+    '{preflight:{required:$req,recommended:$rec},marketplaces:$mkts,versions:{},preflightVersion:"1"}' \
+    > "$MANIFEST" 2>/dev/null || die "Failed to write preflight.json"
+
+  printf "\nCreated %s\n\n" "$MANIFEST"
+  printf "Next:\n"
+  printf "  preflight check\n"
+  printf "  git add preflight.json\n"
+  printf "  git commit -m \"chore: add preflight plugin manifest\"\n"
+}
+
+# ── argument parsing ───────────────────────────────────────────────────────────
+
+# Pre-scan for global flags before subcommand dispatch
+for arg in "$@"; do
+  case "$arg" in
+    --yes|--no-interactive) YES=1 ;;
+  esac
+done
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --yes|--no-interactive) shift ;;  # already handled above
+    --dir)   shift; PREFLIGHT_DIR="$1"; MANIFEST="${PREFLIGHT_DIR}/preflight.json"; shift ;;
+    install) shift; cmd_install "$@"; exit $? ;;
+    check)   shift; cmd_check "$@";   exit $? ;;
+    init)    shift; cmd_init "$@";    exit $? ;;
+    add)     shift; cmd_add "$@";     exit $? ;;
+    help|--help|-h)  cmd_help;        exit 0  ;;
+    --version|-v) printf "preflight %s\n" "$VERSION"; exit 0 ;;
+    *)
+      printf "preflight: unknown command: %s\nRun \`preflight help\` for usage.\n" "$1" >&2
+      exit 1 ;;
+  esac
+done
+
+cmd_help
