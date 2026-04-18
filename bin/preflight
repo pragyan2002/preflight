@@ -127,7 +127,7 @@ cmd_check() {
   else
     REGISTERED=$(adapter_list_marketplaces 2>/dev/null || echo "")
     for mkt in $MKTS; do
-      if echo "$REGISTERED" | grep -qx "$mkt"; then
+      if echo "$REGISTERED" | grep -qxF "$mkt"; then
         printf "  \033[32m✓\033[0m %s\n" "$mkt"
       else
         printf "  \033[31m✗\033[0m %s  NOT REGISTERED\n" "$mkt"
@@ -211,7 +211,7 @@ cmd_install() {
     printf "Registering marketplaces...\n"
     REGISTERED=$(adapter_list_marketplaces 2>/dev/null || echo "")
     echo "$MKTS" | while IFS=" " read -r name repo; do
-      if echo "$REGISTERED" | grep -qx "$name"; then
+      if echo "$REGISTERED" | grep -qxF "$name"; then
         printf "  \033[2mskip\033[0m %s (already registered)\n" "$name"
       else
         printf "  add  %s (%s)..." "$name" "$repo"
@@ -412,7 +412,7 @@ EOF_PLUGINS
   REGISTERED=$(adapter_list_marketplaces 2>/dev/null || echo "")
   for mkt in $SELECTED_MKTS; do
     [ "$mkt" = "claude-plugins-official" ] && continue
-    if echo "$REGISTERED" | grep -qx "$mkt"; then
+    if echo "$REGISTERED" | grep -qxF "$mkt"; then
       printf "\nMarketplace '%s' already registered — skipping.\n" "$mkt"
     else
       AUTO_REPO=$(adapter_get_marketplace_repo "$mkt" 2>/dev/null)
