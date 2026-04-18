@@ -1,0 +1,17 @@
+{
+  "name": "preflight",
+  "owner": {
+    "name": "Pragyan Shukla",
+    "email": "prag.shank@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "preflight",
+      "source": { "source": "github", "repo": "pragyan2002/preflight" },
+      "version": "1.0.0",
+      "description": "Declare required Claude Code plugins in preflight.json. Detects missing deps at session start and installs them with /preflight:install — like package.json but for your Claude Code environment.",
+      "category": "workflow",
+      "keywords": ["dependencies", "plugins", "team", "onboarding", "manifest"]
+    }
+  ]
+}
