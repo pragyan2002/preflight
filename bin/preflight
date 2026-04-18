@@ -410,17 +410,25 @@ cmd_init() {
     [ "$mkt" = "claude-plugins-official" ] && continue
     if echo "$REGISTERED" | grep -qx "$mkt"; then
       printf "\nMarketplace '%s' already registered — skipping.\n" "$mkt"
-    elif [ "$YES" = "1" ]; then
-      printf "\nWarning: marketplace '%s' is not registered and cannot be prompted for in --yes mode.\n" "$mkt"
-      printf "Add it manually to preflight.json under .marketplaces after init.\n"
     else
-      printf "\nMarketplace '%s' needs a source repo.\n" "$mkt"
-      printf "GitHub repo (owner/repo): "
-      read -r REPO
-      if [ -n "$REPO" ]; then
+      AUTO_REPO=$(adapter_get_marketplace_repo "$mkt" 2>/dev/null)
+      if [ -n "$AUTO_REPO" ]; then
+        printf "\nMarketplace '%s' auto-detected: %s\n" "$mkt" "$AUTO_REPO"
         MARKETPLACE_JSON=$(echo "$MARKETPLACE_JSON" | \
-          jq --arg m "$mkt" --arg r "$REPO" \
+          jq --arg m "$mkt" --arg r "$AUTO_REPO" \
           '. + {($m): {"source": "github", "repo": $r}}' 2>/dev/null)
+      elif [ "$YES" = "1" ]; then
+        printf "\nWarning: marketplace '%s' is not registered and cannot be prompted for in --yes mode.\n" "$mkt"
+        printf "Add it manually to preflight.json under .marketplaces after init.\n"
+      else
+        printf "\nMarketplace '%s' needs a source repo.\n" "$mkt"
+        printf "GitHub repo (owner/repo): "
+        read -r REPO
+        if [ -n "$REPO" ]; then
+          MARKETPLACE_JSON=$(echo "$MARKETPLACE_JSON" | \
+            jq --arg m "$mkt" --arg r "$REPO" \
+            '. + {($m): {"source": "github", "repo": $r}}' 2>/dev/null)
+        fi
       fi
     fi
   done
