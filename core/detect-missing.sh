@@ -29,14 +29,17 @@ MAX_LISTED=10
 # Validate: .preflight.required must exist and be an array.
 # Returns 0 if valid, 1 if empty/missing (nothing to check), 2 if malformed.
 validate_required_field() {
-  REQ_TYPE=$(jq -r '(.preflight.required // "missing") | type' "$MANIFEST" 2>/dev/null)
-  if [ "$REQ_TYPE" = "missing" ] || [ -z "$REQ_TYPE" ]; then
-    return 1   # no required deps — nothing to check
-  fi
-  if [ "$REQ_TYPE" != "array" ]; then
-    return 2   # malformed
-  fi
-  return 0
+  REQ_TYPE=$(jq -r '
+    if (.preflight.required == null)
+    then "missing"
+    else (.preflight.required | type)
+    end
+  ' "$MANIFEST" 2>/dev/null)
+  case "$REQ_TYPE" in
+    missing|"") return 1 ;;  # absent — nothing to check
+    array)      return 0 ;;  # valid
+    *)          return 2 ;;  # malformed
+  esac
 }
 
 # Populate MISSING and MISSING_COUNT from .preflight.required.
