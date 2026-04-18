@@ -22,6 +22,20 @@ adapter_list_plugins() {
   jq -r 'keys[] | split("#")[0]' "$INSTALLED_FILE" 2>/dev/null | sort -u
 }
 
+# Look up a marketplace's source repo from Claude Code's known_marketplaces.json.
+# Returns owner/repo for github-type sources, full URL for git-type sources.
+# Prints nothing and returns 1 for directory-type or unknown marketplaces.
+adapter_get_marketplace_repo() {
+  MARKETPLACE="$1"
+  KNOWN="${HOME}/.claude/plugins/known_marketplaces.json"
+  [ ! -f "$KNOWN" ] && return 1
+  jq -r --arg m "$MARKETPLACE" \
+    '.[$m].source | if .source == "github" then .repo
+                    elif .source == "git" then .url
+                    else empty end' \
+    "$KNOWN" 2>/dev/null
+}
+
 # Register a marketplace by name and GitHub repo.
 adapter_add_marketplace() {
   MKT_NAME="$1"
