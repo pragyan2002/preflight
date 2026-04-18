@@ -378,15 +378,17 @@ cmd_init() {
   if [ "$YES" = "1" ]; then
     # Non-interactive: mark all installed plugins as required
     printf "Marking all installed plugins as required:\n"
-    echo "$PLUGIN_LIST" | while IFS= read -r plugin; do
+    while IFS= read -r plugin; do
       [ -z "$plugin" ] && continue
       printf "  required: %s\n" "$plugin"
       REQUIRED_LIST="${REQUIRED_LIST}\"${plugin}\","
-    done
+    done << EOF_PLUGINS
+$PLUGIN_LIST
+EOF_PLUGINS
   else
     printf "Categorise each installed plugin:\n"
     printf "  r = required, o = optional/recommended, s = skip\n\n"
-    echo "$PLUGIN_LIST" | while IFS= read -r plugin; do
+    while IFS= read -r plugin; do
       [ -z "$plugin" ] && continue
       printf "  %s [r/o/s]: " "$plugin"
       read -r CHOICE
@@ -394,7 +396,9 @@ cmd_init() {
         r|R|required)              REQUIRED_LIST="${REQUIRED_LIST}\"${plugin}\"," ;;
         o|O|optional|recommended)  RECOMMENDED_LIST="${RECOMMENDED_LIST}\"${plugin}\"," ;;
       esac
-    done
+    done << EOF_PLUGINS
+$PLUGIN_LIST
+EOF_PLUGINS
   fi
 
   REQUIRED_LIST="${REQUIRED_LIST%,}"
