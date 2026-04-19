@@ -188,6 +188,8 @@ preflight uses an adapter architecture. Claude Code ships in v1. Codex, Cursor, 
 | Cursor | Planned |
 | Windsurf | Planned |
 
+**v1 is Claude Code only.** The `preflight install` / `check` / `init` CLI commands route through whichever adapter matches your PATH. The SessionStart hook (`scripts/check-deps.sh`) is Claude-specific by design: it fires before the user's shell environment is available, so it cannot load adapters and reads Claude's `~/.claude/installed_plugins.json` directly. Future tool support requires both an adapter *and* a tool-specific hook wrapper.
+
 See [`adapters/README.md`](adapters/README.md) to contribute an adapter.
 
 ---

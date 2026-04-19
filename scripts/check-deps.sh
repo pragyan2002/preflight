@@ -11,10 +11,14 @@
 #   exit   = always 0 (hook failures must not block a session)
 
 MANIFEST="${CLAUDE_PROJECT_DIR:-$PWD}/preflight.json"
+
+# Claude Code stores installed plugins at this path. This hook reads it directly
+# because adapters cannot be sourced here — the hook fires before the user's shell
+# environment is available. Supporting other tools requires a separate hook wrapper
+# that knows the tool-specific plugin registry path.
 INSTALLED="${HOME}/.claude/installed_plugins.json"
 
-# Hook always uses the direct file read path (not adapter).
-# Adapters cannot be sourced here — hook fires before shell env is set up.
+# USE_ADAPTER=0: always use the direct file read path, not adapter functions.
 USE_ADAPTER=0
 
 # Guard: no manifest
