@@ -126,13 +126,16 @@ cmd_check() {
     printf "  (none declared)\n"
   else
     REGISTERED=$(adapter_list_marketplaces 2>/dev/null || echo "")
-    for mkt in $MKTS; do
+    while IFS= read -r mkt; do
+      [ -z "$mkt" ] && continue
       if echo "$REGISTERED" | grep -qxF "$mkt"; then
         printf "  \033[32m✓\033[0m %s\n" "$mkt"
       else
         printf "  \033[31m✗\033[0m %s  NOT REGISTERED\n" "$mkt"
       fi
-    done
+    done << EOF_MKTS
+$MKTS
+EOF_MKTS
   fi
 
   # Source core logic with adapter routing
@@ -154,7 +157,8 @@ cmd_check() {
     REQUIRED=$(jq -r '.preflight.required // [] | .[]' "$MANIFEST" 2>/dev/null)
     REQ_MISSING=0
     REQ_TOTAL=0
-    for plugin in $REQUIRED; do
+    while IFS= read -r plugin; do
+      [ -z "$plugin" ] && continue
       REQ_TOTAL=$((REQ_TOTAL + 1))
       FOUND=$(is_installed "$plugin")
       if [ "$FOUND" != "0" ]; then
@@ -163,21 +167,26 @@ cmd_check() {
         printf "  \033[31m✗\033[0m %s  MISSING\n" "$plugin"
         REQ_MISSING=$((REQ_MISSING + 1))
       fi
-    done
+    done << EOF_REQ
+$REQUIRED
+EOF_REQ
 
     printf "\nRecommended plugins\n"
     RECOMMENDED=$(jq -r '.preflight.recommended // [] | .[]' "$MANIFEST" 2>/dev/null)
     if [ -z "$RECOMMENDED" ]; then
       printf "  (none declared)\n"
     else
-      for plugin in $RECOMMENDED; do
+      while IFS= read -r plugin; do
+        [ -z "$plugin" ] && continue
         FOUND=$(is_installed "$plugin")
         if [ "$FOUND" != "0" ]; then
           printf "  \033[32m✓\033[0m %s\n" "$plugin"
         else
           printf "  \033[2m-\033[0m %s  not installed (optional)\n" "$plugin"
         fi
-      done
+      done << EOF_REC
+$RECOMMENDED
+EOF_REC
     fi
 
     printf "\n"
@@ -210,7 +219,8 @@ cmd_install() {
   if [ -n "$MKTS" ]; then
     printf "Registering marketplaces...\n"
     REGISTERED=$(adapter_list_marketplaces 2>/dev/null || echo "")
-    echo "$MKTS" | while IFS=" " read -r name repo; do
+    while IFS=" " read -r name repo; do
+      [ -z "$name" ] && continue
       if echo "$REGISTERED" | grep -qxF "$name"; then
         printf "  \033[2mskip\033[0m %s (already registered)\n" "$name"
       else
@@ -221,7 +231,9 @@ cmd_install() {
           printf " \033[31mfailed\033[0m\n"
         fi
       fi
-    done
+    done << EOF_MKTS
+$MKTS
+EOF_MKTS
   fi
 
   # Step 2: install required plugins
@@ -230,7 +242,8 @@ cmd_install() {
   if [ -z "$REQUIRED" ]; then
     printf "  (none declared)\n"
   else
-    for plugin in $REQUIRED; do
+    while IFS= read -r plugin; do
+      [ -z "$plugin" ] && continue
       FOUND=$(is_installed "$plugin")
       if [ "$FOUND" != "0" ]; then
         printf "  \033[2mskip\033[0m %s (already installed)\n" "$plugin"
@@ -244,7 +257,9 @@ cmd_install() {
           FAILED_COUNT=$((FAILED_COUNT + 1))
         fi
       fi
-    done
+    done << EOF_REQ
+$REQUIRED
+EOF_REQ
   fi
 
   # Step 3: recommended plugins — skip entirely in --yes mode
@@ -254,7 +269,11 @@ cmd_install() {
       printf "\nSkipping recommended plugins (--yes mode).\n"
     else
       printf "\nRecommended plugins (optional):\n"
-      for plugin in $RECOMMENDED; do
+      exec 3<< EOF_REC
+$RECOMMENDED
+EOF_REC
+      while IFS= read -r plugin <&3; do
+        [ -z "$plugin" ] && continue
         FOUND=$(is_installed "$plugin")
         if [ "$FOUND" != "0" ]; then
           printf "  \033[2mskip\033[0m %s (already installed)\n" "$plugin"
@@ -273,6 +292,7 @@ cmd_install() {
           printf "  \033[2mskipped\033[0m\n"
         fi
       done
+      exec 3<&-
     fi
   fi
 
@@ -388,7 +408,10 @@ EOF_PLUGINS
   else
     printf "Categorise each installed plugin:\n"
     printf "  r = required, o = optional/recommended, s = skip\n\n"
-    while IFS= read -r plugin; do
+    exec 3<< EOF_PLUGINS
+$PLUGIN_LIST
+EOF_PLUGINS
+    while IFS= read -r plugin <&3; do
       [ -z "$plugin" ] && continue
       printf "  %s [r/o/s]: " "$plugin"
       read -r CHOICE
@@ -396,9 +419,8 @@ EOF_PLUGINS
         r|R|required)              REQUIRED_LIST="${REQUIRED_LIST}\"${plugin}\"," ;;
         o|O|optional|recommended)  RECOMMENDED_LIST="${RECOMMENDED_LIST}\"${plugin}\"," ;;
       esac
-    done << EOF_PLUGINS
-$PLUGIN_LIST
-EOF_PLUGINS
+    done
+    exec 3<&-
   fi
 
   REQUIRED_LIST="${REQUIRED_LIST%,}"
@@ -410,7 +432,11 @@ EOF_PLUGINS
 
   MARKETPLACE_JSON="{}"
   REGISTERED=$(adapter_list_marketplaces 2>/dev/null || echo "")
-  for mkt in $SELECTED_MKTS; do
+  exec 3<< EOF_MKTS
+$SELECTED_MKTS
+EOF_MKTS
+  while IFS= read -r mkt <&3; do
+    [ -z "$mkt" ] && continue
     [ "$mkt" = "claude-plugins-official" ] && continue
     if echo "$REGISTERED" | grep -qxF "$mkt"; then
       printf "\nMarketplace '%s' already registered — skipping.\n" "$mkt"
@@ -436,6 +462,7 @@ EOF_PLUGINS
       fi
     fi
   done
+  exec 3<&-
 
   jq -n \
     --argjson req  "[${REQUIRED_LIST:-}]" \
